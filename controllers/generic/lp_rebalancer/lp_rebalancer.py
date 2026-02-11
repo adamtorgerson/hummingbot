@@ -133,6 +133,9 @@ class LPRebalancer(ControllerBase):
         # Flag to trigger balance update after position creation
         self._pending_balance_update: bool = False
 
+        # Cached pool price (updated in update_processed_data)
+        self._pool_price: Optional[Decimal] = None
+
         # Initialize rate sources
         self.market_data_provider.initialize_rate_sources([
             ConnectorPair(
@@ -364,9 +367,10 @@ class LPRebalancer(ControllerBase):
 
         Returns None if bounds are invalid.
         """
-        current_price = self.market_data_provider.get_rate(self.config.trading_pair)
-        if current_price is None:
-            self.logger().warning("No price available")
+        # Use pool price (fetched in update_processed_data) for accurate bounds
+        current_price = self._pool_price
+        if current_price is None or current_price == 0:
+            self.logger().warning("No pool price available - waiting for update_processed_data")
             return None
 
         # Calculate amounts based on side
@@ -386,8 +390,8 @@ class LPRebalancer(ControllerBase):
             extra_params["strategyType"] = self.config.strategy_type
 
         self.logger().info(
-            f"Creating position: side={side}, bounds=[{lower_price}, {upper_price}], "
-            f"base={base_amt}, quote={quote_amt}"
+            f"Creating position: side={side}, pool_price={current_price}, "
+            f"bounds=[{lower_price}, {upper_price}], base={base_amt}, quote={quote_amt}"
         )
 
         return LPExecutorConfig(
@@ -507,8 +511,19 @@ class LPRebalancer(ControllerBase):
         return True
 
     async def update_processed_data(self):
-        """Called every tick - no-op since config provides all needed data"""
-        pass
+        """Called every tick - update pool price from connector when no active position."""
+        # Only fetch pool price when no active executor (needed for creating new positions)
+        if self.active_executor() is not None:
+            return
+
+        try:
+            connector = self.market_data_provider.get_connector(self.config.connector_name)
+            if hasattr(connector, 'get_pool_info_by_address'):
+                pool_info = await connector.get_pool_info_by_address(self.config.pool_address)
+                if pool_info and pool_info.price:
+                    self._pool_price = Decimal(str(pool_info.price))
+        except Exception as e:
+            self.logger().debug(f"Could not fetch pool price: {e}")
 
     def to_format_status(self) -> List[str]:
         """Format status for display."""
