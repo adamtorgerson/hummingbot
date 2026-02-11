@@ -3,8 +3,10 @@ from decimal import Decimal
 from typing import Dict, Optional, Union
 
 from hummingbot.connector.gateway.gateway_lp import AMMPoolInfo, CLMMPoolInfo
+from hummingbot.connector.utils import split_hb_trading_pair
 from hummingbot.core.data_type.common import TradeType
 from hummingbot.core.data_type.trade_fee import AddedToCostTradeFee
+from hummingbot.core.rate_oracle.rate_oracle import RateOracle
 from hummingbot.logger import HummingbotLogger
 from hummingbot.strategy.script_strategy_base import ScriptStrategyBase
 from hummingbot.strategy_v2.executors.executor_base import ExecutorBase
@@ -527,9 +529,37 @@ class LPExecutor(ExecutorBase):
                 # No position was created, just complete
                 self.lp_position_state.state = LPExecutorStates.COMPLETE
 
+    def _get_quote_to_global_rate(self) -> Decimal:
+        """
+        Get conversion rate from pool quote currency to global token (USD).
+
+        For pools like COIN-SOL, the quote is SOL. This method returns the
+        SOL-USD rate to convert values to the global token for consistent
+        P&L reporting across different pools.
+
+        Returns Decimal("1") if rate is not available (e.g., already in USD).
+        """
+        _, quote_token = split_hb_trading_pair(self.config.market.trading_pair)
+        # Common USD tokens don't need conversion
+        if quote_token.upper() in ("USD", "USDT", "USDC", "BUSD", "DAI"):
+            return Decimal("1")
+
+        try:
+            rate = RateOracle.get_instance().get_pair_rate(f"{quote_token}-USD")
+            if rate is not None and rate > 0:
+                return rate
+        except Exception as e:
+            self.logger().debug(f"Could not get rate for {quote_token}-USD: {e}")
+
+        return Decimal("1")  # Fallback to no conversion
+
     @property
     def filled_amount_quote(self) -> Decimal:
-        """Returns total position value in quote currency (tokens + fees)"""
+        """Returns total position value in global token (USD).
+
+        Calculates position value in pool quote currency, then converts to
+        global token for consistent reporting across different pools.
+        """
         if self._current_price is None or self._current_price == 0:
             return Decimal("0")
         current_price = self._current_price
@@ -543,7 +573,10 @@ class LPExecutor(ExecutorBase):
             self.lp_position_state.base_fee * current_price +
             self.lp_position_state.quote_fee
         )
-        return token_value + fee_value
+        value_in_quote = token_value + fee_value
+
+        # Convert to global token (USD)
+        return value_in_quote * self._get_quote_to_global_rate()
 
     def get_custom_info(self) -> Dict:
         """Report LP position state to controller"""
@@ -597,11 +630,13 @@ class LPExecutor(ExecutorBase):
 
     def get_net_pnl_quote(self) -> Decimal:
         """
-        Returns net P&L in quote currency.
+        Returns net P&L in global token (USD).
 
         P&L = (current_position_value + fees_earned) - initial_value
 
-        Uses stored initial amounts and add_mid_price for accurate calculation matching lphistory.
+        Calculates P&L in pool quote currency, then converts to global token
+        for consistent reporting across different pools. Uses stored initial
+        amounts and add_mid_price for accurate calculation matching lphistory.
         Works for both open positions and closed positions (using final returned amounts).
         """
         if self._current_price is None or self._current_price == 0:
@@ -634,13 +669,20 @@ class LPExecutor(ExecutorBase):
             self.lp_position_state.quote_fee
         )
 
-        # P&L = current value + fees - initial value
-        return current_value + fees_earned - initial_value
+        # P&L in pool quote currency
+        pnl_in_quote = current_value + fees_earned - initial_value
+
+        # Convert to global token (USD)
+        return pnl_in_quote * self._get_quote_to_global_rate()
 
     def get_net_pnl_pct(self) -> Decimal:
-        """Returns net P&L as percentage of initial investment."""
-        pnl_quote = self.get_net_pnl_quote()
-        if pnl_quote == Decimal("0"):
+        """Returns net P&L as percentage of initial investment.
+
+        Both P&L and initial value are converted to global token (USD) for
+        consistent percentage calculation across different pools.
+        """
+        pnl_global = self.get_net_pnl_quote()  # Already in global token (USD)
+        if pnl_global == Decimal("0"):
             return Decimal("0")
 
         if self._current_price is None or self._current_price == 0:
@@ -658,12 +700,16 @@ class LPExecutor(ExecutorBase):
                          if self.lp_position_state.initial_quote_amount > 0
                          else self.config.quote_amount)
 
-        initial_value = initial_base * add_price + initial_quote
+        # Initial value in pool quote currency
+        initial_value_quote = initial_base * add_price + initial_quote
 
-        if initial_value == Decimal("0"):
+        if initial_value_quote == Decimal("0"):
             return Decimal("0")
 
-        return (pnl_quote / initial_value) * Decimal("100")
+        # Convert to global token (USD) for consistent percentage
+        initial_value_global = initial_value_quote * self._get_quote_to_global_rate()
+
+        return (pnl_global / initial_value_global) * Decimal("100")
 
     def get_cum_fees_quote(self) -> Decimal:
         """
