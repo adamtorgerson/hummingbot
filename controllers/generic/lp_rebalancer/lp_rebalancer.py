@@ -677,7 +677,7 @@ class LPRebalancer(ControllerBase):
             # Closed positions summary
             line = f"| Closed Positions: {len(closed)} (both:{both_count} buy:{buy_count} sell:{sell_count})"
             status.append(line + " " * (box_width - len(line) + 1) + "|")
-            line = f"| Fees: {float(total_fees_base):.6f} {self._base_token} + {float(total_fees_quote):.6f} {self._quote_token} = {float(total_fees_value):.6f} {self._quote_token}"
+            line = f"| Total Fees Earned: {float(total_fees_base):.6f} {self._base_token} + {float(total_fees_quote):.6f} {self._quote_token} = {float(total_fees_value):.6f} {self._quote_token}"
             status.append(line + " " * (box_width - len(line) + 1) + "|")
 
         status.append("+" + "-" * box_width + "+")
