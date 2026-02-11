@@ -515,6 +515,13 @@ class LPRebalancer(ControllerBase):
             current_price = executor.custom_info.get("current_price")
 
             if lower_price and upper_price and current_price:
+                # Show rebalance thresholds
+                threshold_pct = self.config.rebalance_threshold_pct
+                lower_threshold = Decimal(str(lower_price)) * (Decimal("1") - threshold_pct)
+                upper_threshold = Decimal(str(upper_price)) * (Decimal("1") + threshold_pct)
+                line = f"| Rebalance if: <{float(lower_threshold):.6f} or >{float(upper_threshold):.6f}"
+                status.append(line + " " * (box_width - len(line) + 1) + "|")
+
                 state = executor.custom_info.get("state", "UNKNOWN")
                 state_icons = {
                     "IN_RANGE": "●",
