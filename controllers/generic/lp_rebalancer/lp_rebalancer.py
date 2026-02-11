@@ -5,6 +5,7 @@ from typing import List, Optional
 from pydantic import Field, field_validator, model_validator
 
 from hummingbot.core.data_type.common import MarketDict
+from hummingbot.core.utils.async_utils import safe_ensure_future
 from hummingbot.data_feed.candles_feed.data_types import CandlesConfig
 from hummingbot.logger import HummingbotLogger
 from hummingbot.strategy_v2.controllers import ControllerBase, ControllerConfigBase
@@ -129,6 +130,9 @@ class LPRebalancer(ControllerBase):
         self._initial_base_balance: Optional[Decimal] = None
         self._initial_quote_balance: Optional[Decimal] = None
 
+        # Flag to trigger balance update after position creation
+        self._pending_balance_update: bool = False
+
         # Initialize rate sources
         self.market_data_provider.initialize_rate_sources([
             ConnectorPair(
@@ -160,6 +164,16 @@ class LPRebalancer(ControllerBase):
         if executor is None:
             return True
         return executor.status == RunnableStatus.TERMINATED
+
+    def _trigger_balance_update(self):
+        """Trigger a balance update on the connector after position changes."""
+        try:
+            connector = self.market_data_provider.get_connector(self.config.connector_name)
+            if hasattr(connector, 'update_balances'):
+                safe_ensure_future(connector.update_balances())
+                self.logger().info("Triggered balance update after position creation")
+        except Exception as e:
+            self.logger().debug(f"Could not trigger balance update: {e}")
 
     def determine_executor_actions(self) -> List[ExecutorAction]:
         """Decide whether to create/stop executors"""
@@ -216,7 +230,15 @@ class LPRebalancer(ControllerBase):
                 controller_id=self.config.id,
                 executor_config=executor_config
             ))
+            self._pending_balance_update = True
             return actions
+
+        # Trigger balance update after position is created
+        if self._pending_balance_update:
+            state = executor.custom_info.get("state")
+            if state in ("IN_RANGE", "OUT_OF_RANGE"):
+                self._pending_balance_update = False
+                self._trigger_balance_update()
 
         # Check executor state
         state = executor.custom_info.get("state")
