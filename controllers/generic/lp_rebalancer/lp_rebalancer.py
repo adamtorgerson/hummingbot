@@ -516,10 +516,24 @@ class LPRebalancer(ControllerBase):
 
             if lower_price and upper_price and current_price:
                 # Show rebalance thresholds (convert % to decimal)
+                # Takes into account price limits - rebalance only happens within limits
                 threshold = self.config.rebalance_threshold_pct / Decimal("100")
                 lower_threshold = Decimal(str(lower_price)) * (Decimal("1") - threshold)
                 upper_threshold = Decimal(str(upper_price)) * (Decimal("1") + threshold)
-                line = f"| Rebalance if: <{float(lower_threshold):.6f} or >{float(upper_threshold):.6f}"
+
+                # Lower threshold triggers SELL - check sell_price_min
+                if self.config.sell_price_min and lower_threshold < self.config.sell_price_min:
+                    lower_str = "N/A"  # Below sell limit, no rebalance possible
+                else:
+                    lower_str = f"{float(lower_threshold):.6f}"
+
+                # Upper threshold triggers BUY - check buy_price_max
+                if self.config.buy_price_max and upper_threshold > self.config.buy_price_max:
+                    upper_str = "N/A"  # Above buy limit, no rebalance possible
+                else:
+                    upper_str = f"{float(upper_threshold):.6f}"
+
+                line = f"| Rebalance if: <{lower_str} or >{upper_str}"
                 status.append(line + " " * (box_width - len(line) + 1) + "|")
 
                 state = executor.custom_info.get("state", "UNKNOWN")
