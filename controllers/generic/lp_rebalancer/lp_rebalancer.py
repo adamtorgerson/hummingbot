@@ -528,11 +528,6 @@ class LPRebalancer(ControllerBase):
         line = f"| Pool: {self.config.pool_address}"
         status.append(line + " " * (box_width - len(line) + 1) + "|")
 
-        # Config summary
-        side_names = {0: "BOTH", 1: "BUY", 2: "SELL"}
-        line = f"| Config: side={side_names.get(self.config.side, '?')}, total={self.config.total_amount_quote} {self._quote_token}, width={self.config.position_width_pct}%"
-        status.append(line + " " * (box_width - len(line) + 1) + "|")
-
         # Position info from current executor (active or transitioning)
         executor = self.active_executor() or self.get_tracked_executor()
         if executor and not executor.is_done:
@@ -540,6 +535,13 @@ class LPRebalancer(ControllerBase):
             line = f"| Position: {position_address}"
             status.append(line + " " * (box_width - len(line) + 1) + "|")
 
+        # Config summary
+        side_names = {0: "BOTH", 1: "BUY", 2: "SELL"}
+        line = f"| Config: side={side_names.get(self.config.side, '?')}, total={self.config.total_amount_quote} {self._quote_token}, width={self.config.position_width_pct}%"
+        status.append(line + " " * (box_width - len(line) + 1) + "|")
+
+        # Position value and fees
+        if executor and not executor.is_done:
             # Show fees and value
             custom = executor.custom_info
             total_fees_quote = Decimal(str(custom.get("fees_earned_quote", 0)))
