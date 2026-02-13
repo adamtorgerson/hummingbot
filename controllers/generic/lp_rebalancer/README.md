@@ -290,6 +290,7 @@ LPExecutorConfig(
     base_amount=Decimal("0"),       # 0 for BUY side
     quote_amount=Decimal("20"),     # All in quote for BUY
     side=1,                         # BUY
+    position_offset_pct=Decimal("0.1"),  # Used for price shift recovery
     keep_position=False,            # Close on stop
 )
 ```
@@ -312,6 +313,52 @@ When a transaction fails (e.g., due to chain congestion), the executor automatic
 ```
 LP CLOSE FAILED after 10 retries for SOL-USDC. Position ABC... may need manual close.
 ```
+
+### Price Shift Recovery
+
+When creating a single-sided position (BUY or SELL), the price may move into the intended position range between when bounds are calculated and when the transaction executes. This causes the DEX to require tokens on **both** sides instead of just one.
+
+**The Problem:**
+```
+Controller calculates BUY position:
+  price=100, bounds=[99.0, 99.9] (position below current price)
+  → Expects only USDC needed
+
+During transaction submission, price drops to 99.5:
+  → Position is now IN_RANGE
+  → DEX requires BOTH SOL and USDC
+  → Transaction fails with "Price has moved" or "Position would require"
+```
+
+**Automatic Recovery:**
+
+The executor detects this error and automatically shifts bounds using `position_offset_pct`:
+
+1. Fetches current pool price
+2. Recalculates bounds using same width but new anchor point with offset
+3. For BUY: `upper = current_price * (1 - offset_pct)`, then lower extends down
+4. For SELL: `lower = current_price * (1 + offset_pct)`, then upper extends up
+5. Retries position creation with shifted bounds
+
+**This does NOT count as a retry** since it's a recoverable adjustment, not a failure.
+
+**Example (BUY side, offset=0.1%):**
+```
+Original:      bounds=[99.0, 99.9], price moved to 99.5 (in-range!)
+After shift:   bounds=[98.4, 99.4], price=99.5 (out-of-range, only USDC needed)
+```
+
+**Why position_offset_pct matters:**
+
+| offset_pct | Effect |
+|------------|--------|
+| 0 | No buffer - any price movement during TX can cause failure |
+| 0.1 (0.1%) | Small buffer - handles typical price jitter |
+| 1.0 (1%) | Large buffer - handles volatile markets, but position further from price |
+
+The offset ensures the position starts **out-of-range** so only one token is required:
+- BUY positions: only quote token (USDC)
+- SELL positions: only base token (SOL)
 
 ### Executor custom_info
 
