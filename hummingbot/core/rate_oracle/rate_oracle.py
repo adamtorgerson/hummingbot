@@ -26,6 +26,7 @@ from hummingbot.core.rate_oracle.sources.evedex_perpetual_rate_source import Eve
 from hummingbot.core.rate_oracle.sources.gate_io_rate_source import GateIoRateSource
 from hummingbot.core.rate_oracle.sources.hyperliquid_perpetual_rate_source import HyperliquidPerpetualRateSource
 from hummingbot.core.rate_oracle.sources.hyperliquid_rate_source import HyperliquidRateSource
+from hummingbot.core.rate_oracle.sources.kraken_rate_source import KrakenRateSource
 from hummingbot.core.rate_oracle.sources.kucoin_rate_source import KucoinRateSource
 from hummingbot.core.rate_oracle.sources.mexc_rate_source import MexcRateSource
 from hummingbot.core.rate_oracle.sources.pacifica_perpetual_rate_source import PacificaPerpetualRateSource
@@ -52,6 +53,7 @@ RATE_ORACLE_SOURCES = {
     "evedex_perpetual": EvedexPerpetualRateSource,
     "pacifica_perpetual": PacificaPerpetualRateSource,
     "decibel_perpetual": DecibelPerpetualRateSource,
+    "kraken": KrakenRateSource,
 }
 
 

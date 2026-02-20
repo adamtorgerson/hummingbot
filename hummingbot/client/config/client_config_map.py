@@ -748,6 +748,11 @@ class DeriveRateSourceMode(ExchangeRateSourceModeBase):
     model_config = ConfigDict(title="derive")
 
 
+class KrakenRateSourceMode(ExchangeRateSourceModeBase):
+    name: str = Field(default="kraken")
+    model_config = ConfigDict(title="kraken")
+
+
 RATE_SOURCE_MODES = {
     BinanceRateSourceMode.model_config["title"]: BinanceRateSourceMode,
     CoinGeckoRateSourceMode.model_config["title"]: CoinGeckoRateSourceMode,
@@ -764,6 +769,7 @@ RATE_SOURCE_MODES = {
     ArchitectPerpetualRateSourceMode.model_config["title"]: ArchitectPerpetualRateSourceMode,
     DeriveRateSourceMode.model_config["title"]: DeriveRateSourceMode,
     MexcRateSourceMode.model_config["title"]: MexcRateSourceMode,
+    KrakenRateSourceMode.model_config["title"]: KrakenRateSourceMode,
 }
 
 
