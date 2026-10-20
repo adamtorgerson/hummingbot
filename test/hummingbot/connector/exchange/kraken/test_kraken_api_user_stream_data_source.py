@@ -176,3 +176,50 @@ class KrakenAPIUserStreamDataSourceTest(IsolatedAsyncioWrapperTestCase):
         ret = await (output_queue.get())
 
         self.assertEqual(ret, resp)
+
+    @aioresponses()
+    @patch("aiohttp.ClientSession.ws_connect", new_callable=AsyncMock)
+    async def test_reconnect_after_invalid_session_uses_fresh_token(self, mocked_api, ws_connect_mock):
+        self.data_source._sleep = AsyncMock()
+        url = f"{CONSTANTS.BASE_URL}{CONSTANTS.GET_TOKEN_PATH_URL}"
+        regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
+        expired_token_resp = self.get_auth_response_mock()
+        expired_token_resp["result"]["token"] = "expiredToken"
+        fresh_token_resp = self.get_auth_response_mock()
+        fresh_token_resp["result"]["token"] = "freshToken"
+        mocked_api.post(regex_url, body=json.dumps(expired_token_resp))
+        mocked_api.post(regex_url, body=json.dumps(fresh_token_resp))
+
+        first_ws = self.mocking_assistant.create_websocket_mock()
+        second_ws = self.mocking_assistant.create_websocket_mock()
+        ws_connect_mock.side_effect = [first_ws, second_ws]
+        self.mocking_assistant.add_websocket_aiohttp_message(
+            websocket_mock=first_ws,
+            message=json.dumps({"errorMessage": "ESession:Invalid session", "event": "subscriptionStatus",
+                                "status": "error", "subscription": {"name": "openOrders"}}))
+        self.mocking_assistant.add_websocket_aiohttp_message(
+            websocket_mock=second_ws, message=json.dumps(self.get_open_orders_mock()))
+
+        output_queue = asyncio.Queue()
+        self.listening_task = asyncio.create_task(self.data_source.listen_for_user_stream(output_queue))
+        ret = await asyncio.wait_for(output_queue.get(), timeout=5)
+
+        self.assertEqual(ret, self.get_open_orders_mock())
+        first_tokens = [msg["subscription"]["token"]
+                        for msg in self.mocking_assistant.json_messages_sent_through_websocket(first_ws)]
+        second_tokens = [msg["subscription"]["token"]
+                         for msg in self.mocking_assistant.json_messages_sent_through_websocket(second_ws)]
+        self.assertEqual(["expiredToken", "expiredToken"], first_tokens)
+        self.assertEqual(["freshToken", "freshToken"], second_tokens)
+
+    async def test_reconnect_delay_backs_off_and_resets_after_data(self):
+        delays = []
+        for _ in range(8):
+            self.data_source._failed_connection_attempts += 1
+            delays.append(self.data_source._reconnect_delay())
+
+        self.assertEqual([2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 60.0, 60.0], delays)
+
+        await self.data_source._process_event_message(self.get_open_orders_mock(), asyncio.Queue())
+
+        self.assertEqual(0.0, self.data_source._reconnect_delay())
