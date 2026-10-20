@@ -2,28 +2,34 @@ import base64
 import hashlib
 import hmac
 import json
-import time
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
 from hummingbot.connector.time_synchronizer import TimeSynchronizer
+from hummingbot.core.utils.tracking_nonce import NonceCreator
 from hummingbot.core.web_assistant.auth import AuthBase
 from hummingbot.core.web_assistant.connections.data_types import RESTRequest, WSRequest
 
 
 class KrakenAuth(AuthBase):
-    _last_tracking_nonce: int = 0
 
     def __init__(self, api_key: str, secret_key: str, time_provider: TimeSynchronizer):
         self.api_key = api_key
         self.secret_key = secret_key
         self.time_provider = time_provider
+        # Kraken only requires each API key's nonces to increase. This used to be an epoch-seconds counter shared
+        # by every KrakenAuth in the process via a class attribute: two processes signing with the same key in
+        # the same second (a bot and hummingbot-api) sent equal nonces, and a process running several accounts
+        # bumped the shared counter +1 per extra request in a second, drifting it ahead of the clock so other
+        # processes on those keys were rejected with EAPI:Invalid nonce. Milliseconds leave room for ~1000
+        # requests per second before the counter runs ahead of the clock, and one creator per instance (one per
+        # connector) keeps accounts from advancing each other's nonces.
+        # Once a key has seen a millisecond nonce, Kraken rejects any second-based nonce for it, so every process
+        # using the key must run this version.
+        self._nonce_creator = NonceCreator.for_milliseconds()
 
-    @classmethod
     def get_tracking_nonce(self) -> str:
-        nonce = int(time.time())
-        self._last_tracking_nonce = nonce if nonce > self._last_tracking_nonce else self._last_tracking_nonce + 1
-        return str(self._last_tracking_nonce)
+        return str(self._nonce_creator.get_tracking_nonce())
 
     async def rest_authenticate(self, request: RESTRequest) -> RESTRequest:
 

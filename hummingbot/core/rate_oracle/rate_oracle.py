@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import traceback
 import typing
 from decimal import Decimal
 from typing import Dict, Optional
@@ -80,7 +81,7 @@ class RateOracle(NetworkBase):
 
     def __init__(self, source: Optional[RateSourceBase] = None, quote_token: Optional[str] = None):
         super().__init__()
-        self._source: RateSourceBase = source if source is not None else GateIoRateSource()
+        self._source: RateSourceBase = source if source is not None else KrakenRateSource()
         self._prices: Dict[str, Decimal] = {}
         self._fetch_price_task: Optional[asyncio.Task] = None
         self._ready_event = asyncio.Event()
@@ -147,6 +148,11 @@ class RateOracle(NetworkBase):
 
     @source.setter
     def source(self, new_source: RateSourceBase):
+        if new_source.name != self._source.name:
+            self.logger().warning(
+                f"RateOracle source changed from {self._source.name} to {new_source.name}\n"
+                + "".join(traceback.format_stack(limit=15))
+            )
         self._source = new_source
 
     @property

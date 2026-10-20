@@ -1,5 +1,6 @@
 import asyncio
 import re
+import time
 from collections import defaultdict
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
@@ -36,6 +37,7 @@ from hummingbot.core.web_assistant.web_assistants_factory import WebAssistantsFa
 class KrakenExchange(ExchangePyBase):
     UPDATE_ORDER_STATUS_MIN_INTERVAL = 10.0
     SHORT_POLL_INTERVAL = 30.0
+    ASSET_PAIRS_REFRESH_MIN_INTERVAL = 600.0
 
     web_utils = web_utils
     REQUEST_ATTEMPTS = 5
@@ -57,6 +59,8 @@ class KrakenExchange(ExchangePyBase):
         self._trading_pairs = trading_pairs
         self._kraken_api_tier = KrakenAPITier(kraken_api_tier.upper() if kraken_api_tier else "STARTER")
         self._asset_pairs = {}
+        self._asset_pairs_fetched_at = 0.0
+        self._unconvertible_open_order_pairs = set()
         self._client_order_id_nonce_provider = NonceCreator.for_microseconds()
         self._rate_limits_share_pct = rate_limits_share_pct
         self._throttler = self._build_async_throttler(api_tier=self._kraken_api_tier)
@@ -279,7 +283,29 @@ class KrakenExchange(ExchangePyBase):
             self._asset_pairs = {f"{details['base']}-{details['quote']}": details
                                  for _, details in asset_pairs.items() if
                                  web_utils.is_exchange_information_valid(details)}
+            self._asset_pairs_fetched_at = time.monotonic()
         return self._asset_pairs
+
+    async def _open_order_trading_pair(self, exchange_pair: str) -> Optional[str]:
+        """
+        Converts an open order's Kraken pair name using the cached AssetPairs list.
+
+        OpenOrders returns every order on the Kraken account, including ones placed by other bots or by hand on
+        pairs Kraken listed after this connector cached AssetPairs. Converting those used to return None and abort
+        the whole balance update, leaving balances stale for as long as such an order stayed open. On a miss the
+        list is reloaded (at most once per ASSET_PAIRS_REFRESH_MIN_INTERVAL); if the pair still cannot be
+        converted, None is returned and the caller skips the order. The funds that order locks are then not
+        deducted from available balances, so the pair is logged.
+        """
+        pair = convert_from_exchange_trading_pair(exchange_pair, tuple((await self.get_asset_pairs()).keys()))
+        if pair is None and time.monotonic() - self._asset_pairs_fetched_at >= self.ASSET_PAIRS_REFRESH_MIN_INTERVAL:
+            self._asset_pairs = {}
+            pair = convert_from_exchange_trading_pair(exchange_pair, tuple((await self.get_asset_pairs()).keys()))
+        if pair is None and exchange_pair not in self._unconvertible_open_order_pairs:
+            self._unconvertible_open_order_pairs.add(exchange_pair)
+            self.logger().warning(f"Open order on unknown Kraken pair {exchange_pair} skipped in balance update; "
+                                  f"funds it locks are not deducted from available balances.")
+        return pair
 
     async def _place_order(self,
                            order_id: str,
@@ -598,9 +624,9 @@ class KrakenExchange(ExchangePyBase):
             if order.get("status") == "open":
                 details = order.get("descr")
                 if details.get("ordertype") == "limit":
-                    pair = convert_from_exchange_trading_pair(
-                        details.get("pair"), tuple((await self.get_asset_pairs()).keys())
-                    )
+                    pair = await self._open_order_trading_pair(details.get("pair"))
+                    if pair is None:
+                        continue
                     (base, quote) = self.split_trading_pair(pair)
                     vol_locked = Decimal(order.get("vol", 0)) - Decimal(order.get("vol_exec", 0))
                     if details.get("type") == "sell":

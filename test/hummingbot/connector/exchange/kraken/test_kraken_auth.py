@@ -63,3 +63,24 @@ class KrakenAuthTests(TestCase):
         # self.assertEqual(now * 1e3, configured_request.params["timestamp"])
         self.assertEqual(str(expected_signature, 'utf-8'), configured_request.headers["API-Sign"])
         self.assertEqual(self._api_key, configured_request.headers["API-Key"])
+
+    @patch("hummingbot.core.utils.tracking_nonce.NonceCreator._time")
+    def test_tracking_nonce_is_milliseconds_and_strictly_increasing(self, mocked_time):
+        mocked_time.return_value = 1234567890.123
+        auth = KrakenAuth(api_key=self._api_key, secret_key=self._secret, time_provider=MagicMock())
+
+        # Two requests in the same millisecond still get increasing nonces
+        self.assertEqual("1234567890123", auth.get_tracking_nonce())
+        self.assertEqual("1234567890124", auth.get_tracking_nonce())
+
+    @patch("hummingbot.core.utils.tracking_nonce.NonceCreator._time")
+    def test_tracking_nonce_is_not_shared_between_instances(self, mocked_time):
+        mocked_time.return_value = 1234567890.123
+        auth = KrakenAuth(api_key=self._api_key, secret_key=self._secret, time_provider=MagicMock())
+        other_account_auth = KrakenAuth(api_key="otherApiKey", secret_key=self._secret, time_provider=MagicMock())
+
+        for _ in range(5):
+            other_account_auth.get_tracking_nonce()
+
+        # Requests on another account's connector do not push this key's nonce ahead of the clock
+        self.assertEqual("1234567890123", auth.get_tracking_nonce())

@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+import time
 from decimal import Decimal
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from unittest.mock import patch
@@ -1109,6 +1110,55 @@ class KrakenExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
 
         self.assertEqual(self.exchange.available_balances[self.quote_asset], Decimal("171286.6158"))
         self.assertEqual(self.exchange.available_balances[self.base_asset], Decimal("11"))
+
+    def _mock_balance_update_with_order_on_new_pair(self, mocked_api, asset_pairs_after_refresh: Dict):
+        # Asset pairs cached at startup, long enough ago to allow a reload, only know ETH-USDT; the account
+        # also has a buy on NEW-USDT. Seeded directly: a second AssetPairs call within 1s would be throttled.
+        self.exchange._asset_pairs = {f"{d['base']}-{d['quote']}": d for d in self.get_asset_pairs_mock()["result"].values()}
+        self.exchange._asset_pairs_fetched_at = time.monotonic() - self.exchange.ASSET_PAIRS_REFRESH_MIN_INTERVAL
+        url = f"{CONSTANTS.BASE_URL}{CONSTANTS.ASSET_PAIRS_PATH_URL}"
+        mocked_api.get(url, body=json.dumps(asset_pairs_after_refresh))
+
+        url = f"{CONSTANTS.BASE_URL}{CONSTANTS.BALANCE_PATH_URL}"
+        regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
+        mocked_api.post(regex_url, body=json.dumps(self.get_balances_mock(base_asset_balance=10, quote_asset_balance=20)))
+
+        new_pair_order = self.get_order_status_mock(quantity=1, price=3, order_type="buy", status="open")
+        new_pair_order["descr"]["pair"] = f"NEW{self.quote_asset}"
+        open_orders = self.get_open_orders_mock(quantity=1, price=2, order_type="buy")
+        open_orders["result"]["open"]["OXXXXX-NEWPR-XXXXXX"] = new_pair_order
+        url = f"{CONSTANTS.BASE_URL}{CONSTANTS.OPEN_ORDERS_PATH_URL}"
+        regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
+        mocked_api.post(regex_url, body=json.dumps(open_orders))
+
+    @aioresponses()
+    def test_update_balances_reloads_asset_pairs_for_newly_listed_pair(self, mocked_api):
+        asset_pairs = self.get_asset_pairs_mock()
+        new_pair = dict(asset_pairs["result"][f"X{self.base_asset}{self.quote_asset}"])
+        new_pair.update(altname=f"NEW{self.quote_asset}", wsname=f"NEW/{self.quote_asset}", base="NEW")
+        asset_pairs["result"][f"XNEW{self.quote_asset}"] = new_pair
+        self._mock_balance_update_with_order_on_new_pair(mocked_api, asset_pairs_after_refresh=asset_pairs)
+
+        self.async_run_with_timeout(self.exchange._update_balances())
+
+        # Both buys lock quote: 2 USDT on ETH-USDT and 3 USDT on the newly listed NEW-USDT
+        self.assertEqual(self.exchange.available_balances[self.quote_asset], Decimal("171283.6158"))
+        self.assertEqual(self.exchange.available_balances[self.base_asset], Decimal("11"))
+        self.assertIn("NEW-USDT", self.exchange._asset_pairs)
+
+    @aioresponses()
+    def test_update_balances_skips_order_on_unknown_pair(self, mocked_api):
+        self._mock_balance_update_with_order_on_new_pair(mocked_api, asset_pairs_after_refresh=self.get_asset_pairs_mock())
+
+        self.async_run_with_timeout(self.exchange._update_balances())
+
+        # The balance update completes; only the ETH-USDT buy's 2 USDT is deducted
+        self.assertEqual(self.exchange.available_balances[self.quote_asset], Decimal("171286.6158"))
+        self.assertEqual(self.exchange.available_balances[self.base_asset], Decimal("11"))
+        self.assertTrue(self.is_logged(
+            "WARNING",
+            f"Open order on unknown Kraken pair NEW{self.quote_asset} skipped in balance update; "
+            f"funds it locks are not deducted from available balances."))
 
     def _order_cancelation_request_successful_mock_response(self, order: InFlightOrder) -> Any:
         return {

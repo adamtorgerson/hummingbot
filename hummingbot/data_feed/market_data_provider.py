@@ -13,6 +13,7 @@ from hummingbot.client.config.config_helpers import (
 )
 from hummingbot.client.settings import AllConnectorSettings
 from hummingbot.connector.connector_base import ConnectorBase
+from hummingbot.connector.exchange_base import ExchangeBase
 from hummingbot.connector.gateway.common_types import Chain
 from hummingbot.core.data_type.common import GroupedSetDict, LazyDict, PriceType, TradeType
 from hummingbot.core.data_type.order_book_query_result import OrderBookQueryResult
@@ -794,6 +795,21 @@ class MarketDataProvider:
         return RateOracle.get_instance().get_pair_rate(pair)
 
     async def _safe_get_last_traded_prices(self, connector, trading_pairs, timeout=5):
+        # Prefer one batched request when the connector overrides get_last_traded_prices. Fetching pair by
+        # pair cannot fit in `timeout` on rate-limited venues: Kraken throttles /0/public/Ticker to 1 call/s,
+        # so 5+ pairs always time out, and since the timeout covers the whole gather every pair loses its
+        # price for that cycle. Connectors without an override (the base implementation is the same per-pair
+        # gather) and batch failures fall through to the per-pair path below.
+        if len(trading_pairs) > 1 and self._has_batched_last_traded_prices(connector):
+            try:
+                prices = await asyncio.wait_for(
+                    connector.get_last_traded_prices(trading_pairs=trading_pairs), timeout=timeout)
+                # Skip missing, zero or negative prices, same as the per-pair path
+                return {pair: Decimal(price) for pair, price in prices.items()
+                        if pair in trading_pairs and price is not None and Decimal(price) > Decimal("0")}
+            except Exception as e:
+                logging.warning(f"Batched last traded prices failed in connector {connector} for trading pairs "
+                                f"{trading_pairs}, falling back to per-pair requests: {e!r}")
         try:
             tasks = [self._safe_get_last_traded_price(connector, trading_pair) for trading_pair in trading_pairs]
             prices = await asyncio.wait_for(asyncio.gather(*tasks), timeout=timeout)
@@ -802,6 +818,11 @@ class MarketDataProvider:
         except Exception as e:
             logging.error(f"Error getting last traded prices in connector {connector} for trading pairs {trading_pairs}: {e}")
             return {}
+
+    @staticmethod
+    def _has_batched_last_traded_prices(connector) -> bool:
+        batched = getattr(type(connector), "get_last_traded_prices", None)
+        return batched is not None and batched is not ExchangeBase.get_last_traded_prices
 
     async def _safe_get_last_traded_price(self, connector, trading_pair):
         try:

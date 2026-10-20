@@ -2,6 +2,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Dict, Optional
 
 from hummingbot.connector.exchange.kraken import kraken_constants as CONSTANTS
+from hummingbot.connector.utils import split_hb_trading_pair
 from hummingbot.core.rate_oracle.sources.rate_source_base import RateSourceBase
 from hummingbot.core.utils import async_ttl_cache
 
@@ -27,28 +28,25 @@ class KrakenRateSource(RateSourceBase):
                 path_url=CONSTANTS.TICKER_PATH_URL,
                 is_auth_required=False
             )
-            self.logger().info("quote: " + str(quote_token))
             for name, values in tickers.items():
-                # self.logger().info("record: " + str(record))
-                if quote_token not in name:
-                    continue
                 try:
                     pair = await self._exchange.trading_pair_associated_to_exchange_symbol(name)
                 except KeyError:
                     # Ignore results for which their symbols is not tracked by the connector
                     continue
 
-                self.logger().info("pair: " + str(pair))
+                if quote_token is not None:
+                    _, quote = split_hb_trading_pair(trading_pair=pair)
+                    if quote != quote_token:
+                        continue
 
-                if len(values["a"][0]) == 0 or len(values["b"][0]) == '':
+                if len(values["a"][0]) == 0 or len(values["b"][0]) == 0:
                     # Ignore results for which the order book is empty
                     continue
 
                 if Decimal(values["a"][0]) > 0 and Decimal(values["b"][0]) > 0:
                     results[pair] = (Decimal(values["a"][0]) +
                                      Decimal(values["b"][0])) / Decimal("2")
-
-                    self.logger().info("results: " + str(results[pair]))
         except Exception:
             self.logger().exception(
                 msg="Unexpected error while retrieving rates from Kraken. Check the log file for more info.",
@@ -65,5 +63,7 @@ class KrakenRateSource(RateSourceBase):
 
         return KrakenExchange(
             kraken_api_key="",
-            kraken_secret_key=""
+            kraken_secret_key="",
+            trading_pairs=[],
+            trading_required=False,
         )

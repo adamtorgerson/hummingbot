@@ -202,6 +202,37 @@ class TestMarketDataProvider(IsolatedAsyncioWrapperTestCase):
         result = await self.provider._safe_get_last_traded_prices(connector, ["BTC-USDT"])
         self.assertEqual(result, {})
 
+    async def test_safe_get_last_traded_prices_uses_batched_override(self):
+        class BatchedConnector:
+            get_last_traded_prices = AsyncMock(return_value={"BTC-USDT": 100.0, "ETH-USDT": 0.0, "SOL-USDT": 20.0})
+            _get_last_traded_price = AsyncMock()
+
+        connector = BatchedConnector()
+        result = await self.provider._safe_get_last_traded_prices(connector, ["BTC-USDT", "ETH-USDT"])
+        # One batched call, invalid prices and pairs that were not requested are dropped
+        self.assertEqual(result, {"BTC-USDT": Decimal("100")})
+        connector.get_last_traded_prices.assert_awaited_once_with(trading_pairs=["BTC-USDT", "ETH-USDT"])
+        connector._get_last_traded_price.assert_not_awaited()
+
+    async def test_safe_get_last_traded_prices_batched_failure_falls_back_to_per_pair(self):
+        class BatchedConnector:
+            get_last_traded_prices = AsyncMock(side_effect=Exception("Error"))
+            _get_last_traded_price = AsyncMock(return_value=100)
+
+        connector = BatchedConnector()
+        result = await self.provider._safe_get_last_traded_prices(connector, ["BTC-USDT", "ETH-USDT"])
+        self.assertEqual(result, {"BTC-USDT": Decimal("100"), "ETH-USDT": Decimal("100")})
+        self.assertEqual(connector._get_last_traded_price.await_count, 2)
+
+    def test_has_batched_last_traded_prices(self):
+        from hummingbot.connector.exchange.binance.binance_exchange import BinanceExchange
+        from hummingbot.connector.exchange.kraken.kraken_exchange import KrakenExchange
+
+        # The check reads the connector's class, so build bare instances rather than spec'd mocks
+        self.assertTrue(self.provider._has_batched_last_traded_prices(KrakenExchange.__new__(KrakenExchange)))
+        # Binance inherits the base per-pair implementation and keeps the per-pair path
+        self.assertFalse(self.provider._has_batched_last_traded_prices(BinanceExchange.__new__(BinanceExchange)))
+
     def test_remove_rate_sources(self):
         # Test removing regular connector rate sources
         connector_pair = ConnectorPair(connector_name="binance", trading_pair="BTC-USDT")
