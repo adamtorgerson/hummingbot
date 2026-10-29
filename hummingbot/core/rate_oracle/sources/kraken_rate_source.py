@@ -14,6 +14,7 @@ class KrakenRateSource(RateSourceBase):
     def __init__(self):
         super().__init__()
         self._exchange: Optional[KrakenExchange] = None  # delayed because of circular reference
+        self._altnames: Dict[str, str] = {}
 
     @property
     def name(self) -> str:
@@ -28,9 +29,12 @@ class KrakenRateSource(RateSourceBase):
                 path_url=CONSTANTS.TICKER_PATH_URL,
                 is_auth_required=False
             )
+            altnames = await self._get_altnames()
             for name, values in tickers.items():
                 try:
-                    pair = await self._exchange.trading_pair_associated_to_exchange_symbol(name)
+                    # Ticker keys are Kraken's pair names; legacy pairs (XXBTZUSD) differ from the altname (XBTUSD)
+                    # the connector's symbol map is keyed by. Pairs listed after the map was built pass through.
+                    pair = await self._exchange.trading_pair_associated_to_exchange_symbol(altnames.get(name, name))
                 except KeyError:
                     # Ignore results for which their symbols is not tracked by the connector
                     continue
@@ -52,6 +56,15 @@ class KrakenRateSource(RateSourceBase):
                 msg="Unexpected error while retrieving rates from Kraken. Check the log file for more info.",
             )
         return results
+
+    async def _get_altnames(self) -> Dict[str, str]:
+        if not self._altnames:
+            asset_pairs = await self._exchange._api_get(
+                path_url=CONSTANTS.ASSET_PAIRS_PATH_URL,
+                is_auth_required=False
+            )
+            self._altnames = {name: details["altname"] for name, details in asset_pairs.items() if "altname" in details}
+        return self._altnames
 
     def _ensure_exchange(self):
         if self._exchange is None:

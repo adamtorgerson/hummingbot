@@ -1,128 +1,60 @@
 import json
+import re
 from decimal import Decimal
 from test.isolated_asyncio_wrapper_test_case import IsolatedAsyncioWrapperTestCase
 
 from aioresponses import aioresponses
 
 from hummingbot.connector.exchange.kraken import kraken_constants as CONSTANTS
-from hummingbot.connector.utils import combine_to_hb_trading_pair
 from hummingbot.core.rate_oracle.sources.kraken_rate_source import KrakenRateSource
 
 
 class KrakenRateSourceTest(IsolatedAsyncioWrapperTestCase):
-    @classmethod
-    def setUpClass(cls):
-        super().setUpClass()
-        cls.target_token = "ETH"
-        cls.global_token = "USDT"
-        cls.trading_pair = combine_to_hb_trading_pair(base=cls.target_token, quote=cls.global_token)
-        cls.ignored_trading_pair = combine_to_hb_trading_pair(base="SOME", quote="PAIR")
+    @staticmethod
+    def ticker(ask: str, bid: str):
+        return {"a": [ask, "1", "1.000"], "b": [bid, "1", "1.000"], "c": [bid, "0.1"]}
 
-    def setup_kraken_responses(self, mock_api, expected_rate: Decimal):
-        symbols_url = f"{CONSTANTS.BASE_URL}/{CONSTANTS.ASSET_PAIRS_PATH_URL}"
-        symbols_response = [
-            {
-                "altname": f"{self.target_token}{self.global_token}",
-                "wsname": f"{self.target_token}/{self.global_token}",
-                "aclass_base": "currency",
-                "base": f"{self.target_token}",
-                "aclass_quote": "currency",
-                "quote": f"{self.global_token}",
-                "lot": "unit",
-                "pair_decimals": 2,
-                "lot_decimals": 8,
-                "lot_multiplier": 1,
-                "leverage_buy": [
-                    2,
-                    3,
-                ],
-                "leverage_sell": [
-                    2,
-                    3,
-                ],
-                "fees": [
-                    [
-                        0,
-                        0.26
-                    ],
-                    [
-                        50000,
-                        0.24
-                    ],
-                ],
-                "fees_maker": [
-                    [
-                        0,
-                        0.16
-                    ],
-                    [
-                        50000,
-                        0.14
-                    ],
-                ],
-                "fee_volume_currency": "ZUSD",
-                "margin_call": 80,
-                "margin_stop": 40,
-                "ordermin": "0.005"
-            }
-        ]
-        mock_api.get(url=symbols_url, body=json.dumps(symbols_response))
-        prices_url = f"{CONSTANTS.BASE_URL}/{CONSTANTS.TICKER_PATH_URL}"
-        prices_response = [
-            {
-                "error": [],
-                "result": {
-                    f"{self.target_token}/{self.global_token}": {
-                        "a": [
-                            "1983.160000",
-                            "2",
-                            "2.000"
-                        ],
-                        "b": [
-                            "1982.560000",
-                            "1",
-                            "1.000"
-                        ],
-                        "c": [
-                            "1982.830000",
-                            "0.01776628"
-                        ],
-                        "v": [
-                            "425.83616054",
-                            "2481.42735297"
-                        ],
-                        "p": [
-                            "1963.187741",
-                            "1970.754739"
-                        ],
-                        "t": [
-                            672,
-                            3539
-                        ],
-                        "l": [
-                            "1950.480000",
-                            "1922.260000"
-                        ],
-                        "h": [
-                            "1985.930000",
-                            "2036.970000"
-                        ],
-                        "o": "1956.000000"
-                    }
-                }
-            }
-        ]
-        mock_api.get(url=prices_url, body=json.dumps(prices_response))
+    def setup_kraken_responses(self, mock_api):
+        asset_pairs = {
+            # Legacy pair: Kraken's pair name differs from the altname the connector maps by
+            "XXBTZUSD": {"altname": "XBTUSD", "wsname": "XBT/USD", "base": "XXBT", "quote": "ZUSD"},
+            # Newer pair: pair name and altname are the same
+            "SOLUSD": {"altname": "SOLUSD", "wsname": "SOL/USD", "base": "SOL", "quote": "ZUSD"},
+            "ETHUSDT": {"altname": "ETHUSDT", "wsname": "ETH/USDT", "base": "XETH", "quote": "USDT"},
+        }
+        mock_api.get(
+            url=re.compile(rf"^{CONSTANTS.BASE_URL}/*{CONSTANTS.ASSET_PAIRS_PATH_URL}"),
+            body=json.dumps({"error": [], "result": asset_pairs}),
+            repeat=True,
+        )
+        tickers = {
+            "XXBTZUSD": self.ticker("83010.0", "83000.0"),
+            "SOLUSD": self.ticker("106.6", "106.4"),
+            "ETHUSDT": self.ticker("2452.0", "2450.0"),
+            # Not in AssetPairs: ignored
+            "SOMEPAIR": self.ticker("1.0", "1.0"),
+        }
+        mock_api.get(
+            url=re.compile(rf"^{CONSTANTS.BASE_URL}/*{CONSTANTS.TICKER_PATH_URL}"),
+            body=json.dumps({"error": [], "result": tickers}),
+            repeat=True,
+        )
 
     @aioresponses()
     async def test_get_prices(self, mock_api):
-        expected_rate = Decimal("10")
-        self.setup_kraken_responses(mock_api=mock_api, expected_rate=expected_rate)
+        self.setup_kraken_responses(mock_api=mock_api)
 
-        rate_source = KrakenRateSource()
-        prices = await rate_source.get_prices()
-        print("PRICES: " + str(prices))
+        prices = await KrakenRateSource().get_prices()
 
-        self.assertIn(self.trading_pair, prices)
-        self.assertEqual(expected_rate, prices[self.trading_pair])
-        self.assertNotIn(self.ignored_trading_pair, prices)
+        self.assertEqual(Decimal("83005.0"), prices["BTC-USD"])
+        self.assertEqual(Decimal("106.5"), prices["SOL-USD"])
+        self.assertEqual(Decimal("2451.0"), prices["ETH-USDT"])
+        self.assertEqual(3, len(prices))
+
+    @aioresponses()
+    async def test_get_prices_filters_by_quote_token(self, mock_api):
+        self.setup_kraken_responses(mock_api=mock_api)
+
+        prices = await KrakenRateSource().get_prices(quote_token="USDT")
+
+        self.assertEqual({"ETH-USDT": Decimal("2451.0")}, prices)
