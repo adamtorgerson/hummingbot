@@ -388,12 +388,30 @@ class OrderBookTracker:
     async def _initial_order_book_for_trading_pair(self, trading_pair: str) -> OrderBook:
         return await self._data_source.get_new_order_book(trading_pair)
 
+    async def _initial_order_book_with_retry(self, trading_pair: str) -> OrderBook:
+        """
+        Fetches the initial order book, retrying with backoff. A transient snapshot failure (e.g. right after an
+        exchange outage) must not kill initialization, or the tracker never becomes ready and the strategy stalls.
+        """
+        delay = 1.0
+        while True:
+            try:
+                return await self._initial_order_book_for_trading_pair(trading_pair)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self.logger().network(
+                    f"Error fetching initial order book for {trading_pair}. Retrying in {delay:.0f} seconds.",
+                    exc_info=True)
+                await self._sleep(delay=delay)
+                delay = min(delay * 2, 60.0)
+
     async def _init_order_books(self):
         """
         Initialize order books
         """
         for index, trading_pair in enumerate(self._trading_pairs):
-            self._order_books[trading_pair] = await self._initial_order_book_for_trading_pair(trading_pair)
+            self._order_books[trading_pair] = await self._initial_order_book_with_retry(trading_pair)
             self._tracking_message_queues[trading_pair] = asyncio.Queue()
             self._tracking_tasks[trading_pair] = safe_ensure_future(self._track_single_book(trading_pair))
             self.logger().info(f"Initialized order book for {trading_pair}. "

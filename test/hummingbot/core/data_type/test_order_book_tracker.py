@@ -826,6 +826,39 @@ class OrderBookTrackerDynamicPairTests(IsolatedAsyncioWrapperTestCase):
         self.assertNotIn(pair_to_remove, tracker._past_diffs_windows)
         self.assertNotIn(pair_to_remove, tracker._saved_message_queues)
 
+    async def test_init_order_books_retries_failed_snapshot(self):
+        """A transient snapshot error must not prevent the tracker from becoming ready."""
+        tracker = self._create_tracker()
+        tracker._sleep = AsyncMock()
+        self.data_source.get_new_order_book = AsyncMock(side_effect=[
+            IOError("Error fetching snapshot. Error is ['EGeneral:No data']."),
+            IOError("Error fetching snapshot. Error is ['EGeneral:No data']."),
+            OrderBook(),
+            OrderBook(),
+        ])
+
+        await tracker._init_order_books()
+
+        self.assertTrue(tracker.ready)
+        self.assertEqual(set(self.trading_pairs), set(tracker._order_books))
+        self.assertEqual(4, self.data_source.get_new_order_book.call_count)
+        retry_delays = [c.kwargs["delay"] for c in tracker._sleep.call_args_list[:2]]
+        self.assertEqual([1.0, 2.0], retry_delays)
+
+        for task in tracker._tracking_tasks.values():
+            task.cancel()
+
+    async def test_init_order_books_propagates_cancellation(self):
+        tracker = self._create_tracker()
+        tracker._sleep = AsyncMock()
+        self.data_source.get_new_order_book = AsyncMock(side_effect=asyncio.CancelledError)
+
+        with self.assertRaises(asyncio.CancelledError):
+            await tracker._init_order_books()
+
+        self.assertFalse(tracker.ready)
+        self.assertEqual(1, self.data_source.get_new_order_book.call_count)
+
 
 class LatencyStatsEdgeCasesTests(unittest.TestCase):
     """Edge case tests for LatencyStats."""
