@@ -299,6 +299,7 @@ class StrategyV2Base(StrategyPyBase):
 
         :param timestamp: current tick timestamp
         """
+        self._refresh_mqtt_publisher()
         if not self.ready_to_trade:
             self.ready_to_trade = all(ex.ready for ex in self.connectors.values())
             if not self.ready_to_trade:
@@ -634,15 +635,27 @@ class StrategyV2Base(StrategyPyBase):
         """
         self._last_timestamp = timestamp
         self.apply_initial_setting()
-        # Check if MQTT is enabled at runtime
-        from hummingbot.client.hummingbot_application import HummingbotApplication
-        if HummingbotApplication.main_application()._mqtt is not None:
-            self.mqtt_enabled = True
-            self._pub = ETopicPublisher("performance", use_bot_prefix=True)
+        self._refresh_mqtt_publisher()
 
         # Start controllers
         for controller in self.controllers.values():
             controller.start()
+
+    def _refresh_mqtt_publisher(self):
+        """
+        Binds the performance publisher to the current MQTT gateway. Checked every tick rather than only on start:
+        the bridge clears its gateway between failed connection attempts, so a strategy started in that window would
+        otherwise never publish, and a publisher bound to a replaced gateway would publish into a stopped one.
+        """
+        if self._is_stop_triggered:
+            return
+        from hummingbot.client.hummingbot_application import HummingbotApplication
+        gateway = HummingbotApplication.main_application()._mqtt
+        if gateway is None:
+            return
+        if self._pub is None or self._pub._gateway is not gateway:
+            self.mqtt_enabled = True
+            self._pub = ETopicPublisher("performance", use_bot_prefix=True)
 
     def apply_initial_setting(self):
         """

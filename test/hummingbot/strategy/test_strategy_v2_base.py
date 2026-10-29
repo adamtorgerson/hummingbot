@@ -56,6 +56,52 @@ class TestStrategyV2Base(IsolatedAsyncioWrapperTestCase):
         self.strategy.tick(self.start_timestamp + 10)
         self.assertTrue(self.strategy.ready_to_trade)
 
+    @patch("hummingbot.strategy.strategy_v2_base.ETopicPublisher")
+    @patch("hummingbot.client.hummingbot_application.HummingbotApplication.main_application")
+    def test_mqtt_publisher_created_when_gateway_connects_after_start(self, main_application_mock, publisher_mock):
+        app = main_application_mock.return_value
+        app._mqtt = None
+        publisher_mock.side_effect = lambda *args, **kwargs: MagicMock(_gateway=app._mqtt)
+
+        self.strategy.start(Clock(ClockMode.BACKTEST), self.start_timestamp)
+        self.assertIsNone(self.strategy._pub)
+        self.assertFalse(self.strategy.mqtt_enabled)
+
+        app._mqtt = MagicMock()
+        self.strategy.tick(self.start_timestamp + 1)
+        self.assertTrue(self.strategy.mqtt_enabled)
+        self.assertIs(app._mqtt, self.strategy._pub._gateway)
+        publisher_mock.assert_called_once_with("performance", use_bot_prefix=True)
+
+        self.strategy._refresh_mqtt_publisher()
+        publisher_mock.assert_called_once()
+
+    @patch("hummingbot.strategy.strategy_v2_base.ETopicPublisher")
+    @patch("hummingbot.client.hummingbot_application.HummingbotApplication.main_application")
+    def test_mqtt_publisher_rebound_when_gateway_replaced(self, main_application_mock, publisher_mock):
+        app = main_application_mock.return_value
+        app._mqtt = MagicMock()
+        publisher_mock.side_effect = lambda *args, **kwargs: MagicMock(_gateway=app._mqtt)
+        self.strategy.start(Clock(ClockMode.BACKTEST), self.start_timestamp)
+        first_pub = self.strategy._pub
+
+        app._mqtt = MagicMock()
+        self.strategy.tick(self.start_timestamp + 1)
+
+        self.assertIsNot(first_pub, self.strategy._pub)
+        self.assertIs(app._mqtt, self.strategy._pub._gateway)
+
+    @patch("hummingbot.strategy.strategy_v2_base.ETopicPublisher")
+    @patch("hummingbot.client.hummingbot_application.HummingbotApplication.main_application")
+    def test_mqtt_publisher_not_recreated_after_stop(self, main_application_mock, publisher_mock):
+        main_application_mock.return_value._mqtt = MagicMock()
+        self.strategy._is_stop_triggered = True
+
+        self.strategy.tick(self.start_timestamp + 1)
+
+        self.assertIsNone(self.strategy._pub)
+        publisher_mock.assert_not_called()
+
     def test_init_markets(self):
         StrategyV2Base.init_markets(self.strategy_config)
         # With no controllers configured, markets should be empty
